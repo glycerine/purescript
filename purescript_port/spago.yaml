@@ -1,0 +1,40 @@
+package:
+  name: compiler
+  dependencies:
+    - prelude
+    - effect
+    - console
+    - refs
+    - ordered-collections
+    - either
+    - maybe
+    - tuples
+    - lists
+    - arrays
+    - strings
+    - unicode
+    - integers
+    - numbers
+    - nonempty
+    - transformers
+    - parsing
+    - argonaut-core
+    - argonaut-codecs
+    - codec
+    - codec-argonaut
+    - dodo-printer
+    - foldable-traversable
+    - control
+    - identity
+    - newtype
+    - profunctor
+    - safe-coerce
+  test:
+    main: Test.Main
+    dependencies:
+      - spec
+      - spec-discovery
+workspace:
+  packageSet:
+    registry: 77.4.0
+  extraPackages: {}

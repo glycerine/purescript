@@ -278,6 +278,12 @@ renameDecl _imports _modSS mn decl = lift do
       TypedValue check val ty -> do
         ty' <- resolveType ty
         pure (Tuple state (TypedValue check val ty'))
+      Let w ds _ ->
+        let letBound = Array.foldl (\acc d -> case d of
+              ValueDeclaration (ValueDeclarationData vd) ->
+                Map.insert vd.valdeclIdent (spanStart (fst vd.valdeclSourceAnn)) acc
+              _ -> acc) bound ds
+        in pure (Tuple (Tuple pos letBound) expr)
       _ -> pure (Tuple state expr)
 
     updateBinder' :: Tuple SourceSpan (Map Ident SourcePos) -> Binder -> m (Tuple (Tuple SourceSpan (Map Ident SourcePos)) Binder)

@@ -58,6 +58,8 @@ main = do
   testCompile "module Test where\n\ndata List a = Nil | Cons a (List a)" "Test" "List data type"
   testCompile "module Test where\n\ntype Pair a b = { fst :: a, snd :: b }" "Test" "type synonym"
   testCompile "module CaseTest where\n\ndata Maybe a = Nothing | Just a\n\nfromMaybe :: forall a. a -> Maybe a -> a\nfromMaybe def Nothing  = def\nfromMaybe _   (Just x) = x" "CaseTest" "case function"
+  testCompile "module Test where\n\nlet_ :: forall a b. a -> b -> a\nlet_ x y = let z = x in z" "Test" "let expression"
+  testCompile "module Test where\n\nnewtype Wrapper a = Wrapper a\n\nunwrap :: forall a. Wrapper a -> a\nunwrap (Wrapper x) = x" "Test" "newtype"
   log ""
   log "=== Phase 3: Real Test Files (CST Parse) ==="
   testDir "../tests/purs/passing"
@@ -70,6 +72,8 @@ main = do
   testCoreFnOutput "module DataTypes where\n\ndata Maybe a = Nothing | Just a\n\ndata List a = Nil | Cons a (List a)" "DataTypes" "/tmp/ps_compare/port/DataTypes"
   testCoreFnOutput "module Flip where\n\nflip :: forall a b c. (a -> b -> c) -> b -> a -> c\nflip f b a = f a b" "Flip" "/tmp/ps_compare/port/Flip"
   testCoreFnOutput "module CaseTest where\n\ndata Maybe a = Nothing | Just a\n\nfromMaybe :: forall a. a -> Maybe a -> a\nfromMaybe def Nothing  = def\nfromMaybe _   (Just x) = x" "CaseTest" "/tmp/ps_compare/port/CaseTest"
+  testCoreFnOutput "module LetTest where\n\nlet_ :: forall a b. a -> b -> a\nlet_ x y = let z = x in z" "LetTest" "/tmp/ps_compare/port/LetTest"
+  testCoreFnOutput "module Newtype where\n\nnewtype Wrapper a = Wrapper a\n\nunwrap :: forall a. Wrapper a -> a\nunwrap (Wrapper x) = x" "Newtype" "/tmp/ps_compare/port/Newtype"
   log ""
   log "=== Phase 5: CoreFn Comparison with Haskell Reference ==="
   compareCoreFn "Identity" "/tmp/ps_compare/reference/Identity/corefn.json" "/tmp/ps_compare/port/Identity/corefn.json"
@@ -77,6 +81,8 @@ main = do
   compareCoreFn "DataTypes" "/tmp/ps_compare/reference/DataTypes/corefn.json" "/tmp/ps_compare/port/DataTypes/corefn.json"
   compareCoreFn "Flip" "/tmp/ps_compare/reference2/Flip/corefn.json" "/tmp/ps_compare/port/Flip/corefn.json"
   compareCoreFn "CaseTest" "/tmp/ps_compare/reference2/CaseTest/corefn.json" "/tmp/ps_compare/port/CaseTest/corefn.json"
+  compareCoreFn "LetTest" "/tmp/ps_compare/reference3/LetTest/corefn.json" "/tmp/ps_compare/port/LetTest/corefn.json"
+  compareCoreFn "Newtype" "/tmp/ps_compare/reference3/Newtype/corefn.json" "/tmp/ps_compare/port/Newtype/corefn.json"
 
 testDir :: String -> Effect Unit
 testDir dir = do
