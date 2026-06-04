@@ -478,16 +478,33 @@ export async function loadExternsFile(path) {
   return decodeExternsFile(buf);
 }
 
-// Load all externs from a stdlib cache directory, sorted in topological order
+// Load all externs from a stdlib cache directory, sorted in topological order.
+// Filters out test modules (only includes modules from .spago/ package set paths).
 export async function loadAllExterns(cacheDir) {
   const fs = await import('fs');
   const path = await import('path');
   const dirs = fs.readdirSync(cacheDir);
+
+  // Read cache-db.json to determine source paths and filter test modules
+  const cacheDbPath = path.join(cacheDir, 'cache-db.json');
+  let cacheDb = {};
+  if (fs.existsSync(cacheDbPath)) {
+    cacheDb = JSON.parse(fs.readFileSync(cacheDbPath, 'utf8'));
+  }
+  // Only include modules whose source path comes from .spago/ (stdlib packages)
+  const isStdlibModule = (modName) => {
+    const entry = cacheDb[modName];
+    if (!entry) return true; // include if not in db (conservative)
+    const paths = Object.keys(entry);
+    return paths.some(p => p.startsWith('.spago/') || p.startsWith('src/'));
+  };
+
   const externs = [];
   let loaded = 0;
   let failed = 0;
   for (const dir of dirs) {
     if (dir === 'cache-db.json') continue;
+    if (!isStdlibModule(dir)) continue;
     const externPath = path.join(cacheDir, dir, 'externs.cbor');
     if (!fs.existsSync(externPath)) continue;
     try {

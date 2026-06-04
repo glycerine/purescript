@@ -1,4 +1,9 @@
--- | Port of Haskell's Data.Graph SCC functionality using Tarjan's algorithm.
+-- | Port of Haskell's Data.Graph SCC functionality.
+-- | Implements containers-0.6.8's algorithm:
+-- |   scc g = dfs g (reverse (postOrd (transposeG g)))
+-- | where postOrd uses DFS on the TRANSPOSED graph,
+-- | and the second DFS on the ORIGINAL graph uses reversed postorder as
+-- | starting vertices. This exactly matches Haskell's stronglyConnCompR output.
 module Data.Graph
   ( SCC(..)
   , stronglyConnComp
@@ -11,6 +16,7 @@ import Data.Array as Array
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Map (Map)
 import Data.Map as Map
+import Data.Ord (comparing)
 import Data.Tuple (Tuple(..))
 
 data SCC a
@@ -33,94 +39,100 @@ stronglyConnComp verts =
   mapSCC f (AcyclicSCC x) = AcyclicSCC (f x)
   mapSCC f (CyclicSCC xs) = CyclicSCC (map f xs)
 
--- | Like stronglyConnComp but returns the full vertex Tuple node (Tuple key (Array depKey)) in each SCC.
+-- | Like stronglyConnComp but returns the full vertex in each SCC.
+-- | Implements containers-0.6.8's:
+-- |   scc g = dfs g (reverse (postOrd (transposeG g)))
 stronglyConnCompR
   :: forall node key
    . Ord key
   => Array (Tuple (Tuple node key) (Tuple key (Array key)))
   -> Array (SCC (Tuple node (Tuple key (Array key))))
-stronglyConnCompR verts = runTarjan
+stronglyConnCompR verts =
+  if n == 0 then []
+  else map decode sccTrees
   where
-  n = Array.length verts
+  -- Sort vertices by key ascending (matching graphFromEdges)
+  sorted = Array.sortBy (comparing (\(Tuple (Tuple _ k) _) -> k)) verts
+  n = Array.length sorted
 
+  keyToIdx :: Map key Int
   keyToIdx = Map.fromFoldable
-    (Array.mapWithIndex (\i (Tuple (Tuple _ k) _) -> Tuple k i) verts)
+    (Array.mapWithIndex (\i (Tuple (Tuple _ k) _) -> Tuple k i) sorted)
 
-  nodeAt i = case Array.index verts i of
+  nodeAt :: Int -> Tuple node (Tuple key (Array key))
+  nodeAt i = case Array.index sorted i of
     Just (Tuple (Tuple nd k) (Tuple _ ds)) -> Tuple nd (Tuple k ds)
     Nothing -> unsafeCrash "nodeAt: out of bounds"
 
-  depsOf i = case Array.index verts i of
-    Just (Tuple _ (Tuple _ ds)) ->
-      Array.mapMaybe (\k -> Map.lookup k keyToIdx) ds
-    Nothing -> []
+  -- Adjacency lists: adj[i] = outgoing neighbors of i (i depends on these)
+  adjList :: Array (Array Int)
+  adjList = map (\(Tuple _ (Tuple _ ds)) -> Array.mapMaybe (\k -> Map.lookup k keyToIdx) ds) sorted
 
-  initState =
-    { counter:  0
-    , indices:  (Map.empty :: Map Int Int)
-    , lowlinks: (Map.empty :: Map Int Int)
-    , onStack:  (Map.empty :: Map Int Boolean)
-    , stack:    ([] :: Array Int)
-    , result:   []
-    }
+  adj :: Int -> Array Int
+  adj i = fromMaybe [] (Array.index adjList i)
 
-  runTarjan =
-    if n == 0 then []
-    else
-      let finalState = Array.foldl visit initState (Array.range 0 (n - 1))
-      in finalState.result
+  -- Transposed adjacency lists: adjT[i] = vertices that depend on i
+  adjTList :: Array (Array Int)
+  adjTList = Array.foldl
+    (\acc (Tuple i neighbors) ->
+      Array.foldl
+        (\a w ->
+          case Array.index a w of
+            Nothing -> a
+            Just ws -> fromMaybe a (Array.updateAt w (Array.snoc ws i) a))
+        acc
+        neighbors)
+    (Array.replicate n [])
+    (Array.mapWithIndex Tuple adjList)
 
-  visit st v
-    | Map.member v st.indices = st
-    | otherwise = strongconnect st v
+  adjT :: Int -> Array Int
+  adjT i = fromMaybe [] (Array.index adjTList i)
 
-  strongconnect st0 v =
-    let st1 = st0
-              { counter  = st0.counter + 1
-              , indices  = Map.insert v st0.counter st0.indices
-              , lowlinks = Map.insert v st0.counter st0.lowlinks
-              , stack    = Array.cons v st0.stack
-              , onStack  = Map.insert v true st0.onStack
-              }
-        st2 = Array.foldl (processEdge v) st1 (depsOf v)
-        vLow = fromMaybe 0 (Map.lookup v st2.lowlinks)
-        vIdx = fromMaybe 0 (Map.lookup v st2.indices)
-    in if vLow == vIdx then popSCC st2 v else st2
-
-  processEdge v st w
-    | not (Map.member w st.indices) =
-        let st' = strongconnect st w
-            wLow = fromMaybe 0 (Map.lookup w st'.lowlinks)
-            vLow = fromMaybe 0 (Map.lookup v st'.lowlinks)
-        in st' { lowlinks = Map.insert v (min vLow wLow) st'.lowlinks }
-    | fromMaybe false (Map.lookup w st.onStack) =
-        let wIdx = fromMaybe 0 (Map.lookup w st.indices)
-            vLow = fromMaybe 0 (Map.lookup v st.lowlinks)
-        in st { lowlinks = Map.insert v (min vLow wIdx) st.lowlinks }
-    | otherwise = st
-
-  popSCC st root =
-    let Tuple members rest = splitAtRoot st.stack
-        st2 = st
-          { stack   = rest
-          , onStack = Array.foldl (\m i -> Map.insert i false m) st.onStack members
-          }
-        sccNodes = map nodeAt members
-        scc = case sccNodes of
-          [single] ->
-            if Array.any (_ == root) (depsOf root)
-              then CyclicSCC sccNodes
-              else AcyclicSCC single
-          _ -> CyclicSCC sccNodes
-    in st2 { result = Array.snoc st2.result scc }
+  -- Step 2: DFS on transposed graph from [0..n-1], compute postorder
+  -- postorder: children before parent
+  postOrdT :: Array Int
+  postOrdT = _.postorder $
+    Array.foldl visitT { visited: Map.empty, postorder: [] } (Array.range 0 (n - 1))
     where
-    splitAtRoot arr = go [] arr
-      where
-      go acc remaining = case Array.uncons remaining of
-        Nothing -> Tuple (Array.reverse acc) []
-        Just { head: x, tail: xs } ->
-          if x == root
-            then Tuple (Array.reverse (Array.cons x acc)) xs
-            else go (Array.cons x acc) xs
+    visitT st v
+      | Map.member v st.visited = st
+      | otherwise =
+          let st1 = st { visited = Map.insert v unit st.visited }
+              st2 = Array.foldl visitT st1 (adjT v)
+          in st2 { postorder = Array.snoc st2.postorder v }
+
+  -- Step 3: DFS on original graph from reversed postorder
+  -- Each tree collects nodes in preorder (root first, then descendants)
+  sccTrees :: Array { root :: Int, members :: Array Int }
+  sccTrees = _.result $
+    Array.foldl visitG { visited: Map.empty, result: [] } (Array.reverse postOrdT)
+    where
+    visitG st v
+      | Map.member v st.visited = st
+      | otherwise =
+          let Tuple members newVisited = collectPreorder st.visited v
+          in { visited: newVisited, result: Array.snoc st.result { root: v, members } }
+
+    collectPreorder :: Map Int Unit -> Int -> Tuple (Array Int) (Map Int Unit)
+    collectPreorder visited0 v =
+      let visited1 = Map.insert v unit visited0
+          Tuple childNodes visited2 = Array.foldl
+            (\(Tuple acc vis) w ->
+              if Map.member w vis then Tuple acc vis
+              else
+                let Tuple sub vis' = collectPreorder vis w
+                in Tuple (acc <> sub) vis')
+            (Tuple [] visited1)
+            (adj v)
+      in Tuple ([v] <> childNodes) visited2
+
+  -- Step 4: decode each SCC tree
+  decode :: { root :: Int, members :: Array Int } -> SCC (Tuple node (Tuple key (Array key)))
+  decode { root: v, members } = case members of
+    [_] ->
+      if Array.any (_ == v) (adj v)
+        then CyclicSCC [nodeAt v]
+        else AcyclicSCC (nodeAt v)
+    _ -> CyclicSCC (map nodeAt members)
 
 foreign import unsafeCrash :: forall a. String -> a

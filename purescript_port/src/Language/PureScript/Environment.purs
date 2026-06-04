@@ -276,7 +276,7 @@ primTypes = Map.fromFoldable
 
 primClasses :: Map (Qualified (ProperName ClassName)) TypeClassData
 primClasses = Map.fromFoldable
-  [ Tuple (primQualCls (ModuleName "Prim") "Partial") dummyClassEntry
+  [ Tuple (primQualCls (ModuleName "Prim") "Partial") (makeTypeClassData [] [] [] [] true)
   ]
 
 primBooleanTypes :: Map (Qualified (ProperName TypeName)) (Tuple SourceType TypeKind)

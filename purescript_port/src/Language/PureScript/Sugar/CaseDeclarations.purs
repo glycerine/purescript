@@ -394,7 +394,7 @@ makeCaseDeclaration ss ident alternatives = do
       binders = map (\(Tuple bs result) -> CaseAlternative { caseAlternativeBinders: bs, caseAlternativeResult: result }) alternatives
       value = Array.foldr (\(Tuple argSs i) acc -> Abs (VarBinder argSs i) acc) (Case vars binders) args
   pure $ ValueDeclaration (ValueDeclarationData
-    { valdeclSourceAnn: nullSourceAnn
+    { valdeclSourceAnn: Tuple ss []
     , valdeclIdent: ident
     , valdeclName: Public
     , valdeclBinders: []

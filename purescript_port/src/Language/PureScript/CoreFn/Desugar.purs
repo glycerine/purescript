@@ -25,6 +25,8 @@ import Language.PureScript.AST.Declarations
   , GuardedExpr(..)
   , Guard(..)
   , Module(..)
+  , TypeFixity(..)
+  , ValueFixity(..)
   , WhereProvenance(..)
   , ValueDeclarationData(..)
   )
@@ -138,9 +140,10 @@ moduleToCoreFn env (Module modSS coms mn decls (Just exps)) =
   dedupeImports :: Array (Tuple Ann ModuleName) -> Array (Tuple Ann ModuleName)
   dedupeImports xs =
     -- swap so ModuleName is the key, dedupe via Map, then swap back
+    -- Use (\a _ -> a) to keep the LAST (newest) value, matching Haskell's fromListWith const
     map swap
     <<< Map.toUnfoldable
-    <<< Map.fromFoldableWith (\_ b -> b)
+    <<< Map.fromFoldableWith (\a _ -> a)
     <<< map swap
     $ xs
 
@@ -412,6 +415,8 @@ findQualModules decls =
   where
   fqDecls :: Declaration -> Array ModuleName
   fqDecls (TypeInstanceDeclaration _ _ _ _ _ _ q _ _) = getQual' q
+  fqDecls (FixityDeclaration _ (Left (ValueFixity _ q _))) = getQual' q
+  fqDecls (FixityDeclaration _ (Right (TypeFixity _ q _))) = getQual' q
   fqDecls _ = []
 
   fqValues :: Expr -> Array ModuleName

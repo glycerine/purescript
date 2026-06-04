@@ -92,11 +92,22 @@ function compileModule(PS, externs, src, filename) {
   return { ok: true, json };
 }
 
+// Recursively sort object keys for canonical comparison (aeson sorts alphabetically).
+function sortKeys(v) {
+  if (Array.isArray(v)) return v.map(sortKeys);
+  if (v !== null && typeof v === 'object') {
+    const sorted = {};
+    for (const k of Object.keys(v).sort()) sorted[k] = sortKeys(v[k]);
+    return sorted;
+  }
+  return v;
+}
+
 function jsonEqual(a, b) {
-  // Compare ignoring modulePath
+  // Compare ignoring modulePath, with canonical key ordering
   const cleanA = Object.fromEntries(Object.entries(a).filter(([k]) => k !== 'modulePath'));
   const cleanB = Object.fromEntries(Object.entries(b).filter(([k]) => k !== 'modulePath'));
-  return JSON.stringify(cleanA) === JSON.stringify(cleanB);
+  return JSON.stringify(sortKeys(cleanA)) === JSON.stringify(sortKeys(cleanB));
 }
 
 function findTestFile(refName, testDir) {
