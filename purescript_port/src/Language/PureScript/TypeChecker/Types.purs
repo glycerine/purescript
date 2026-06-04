@@ -737,12 +737,12 @@ inferLetBinding seen decls ret j = case Array.uncons decls of
         let Tuple ss _ = vd.valdeclSourceAnn
             ident      = vd.valdeclIdent
             nameKind   = vd.valdeclName
+            letKey     = Qualified (BySourcePos (spanStart ss)) ident
         moduleName <- unsafeCheckCurrentModule
         TypedValue' _ val' ty'' <- warnAndRethrowWithPositionTC ss do
           Tuple (Tuple args elabTy) _kind <- kindOfWithScopedVars ty
           checkTypeKind ty _kind
-          let dict = Map.singleton (Qualified byNullSourcePos ident)
-                       (Tuple (Tuple elabTy nameKind) Undefined)
+          let dict = Map.singleton letKey (Tuple (Tuple elabTy nameKind) Undefined)
           ty' <- (introduceSkolemScope <=< replaceAllTypeSynonyms <=< replaceTypeWildcards) elabTy
           if checkType
             then withScopedTypeVars moduleName args (bindNames dict (check val ty'))
@@ -750,8 +750,7 @@ inferLetBinding seen decls ret j = case Array.uncons decls of
         let newDecl = ValueDeclaration
               (ValueDeclarationData vd { valdeclExpression = [GuardedExpr [] (TypedValue checkType val' ty'')] })
         bindNames
-          (Map.singleton (Qualified byNullSourcePos ident)
-            (Tuple (Tuple ty'' nameKind) Defined))
+          (Map.singleton letKey (Tuple (Tuple ty'' nameKind) Defined))
           (inferLetBinding (seen <> [newDecl]) rest ret j)
   Just { head: ValueDeclaration (ValueDeclarationData vd), tail: rest }
     | Array.length vd.valdeclBinders == 0
@@ -759,16 +758,15 @@ inferLetBinding seen decls ret j = case Array.uncons decls of
         let Tuple ss _ = vd.valdeclSourceAnn
             ident      = vd.valdeclIdent
             nameKind   = vd.valdeclName
+            letKey     = Qualified (BySourcePos (spanStart ss)) ident
         valTy <- freshTypeWithKind kindType
         TypedValue' _ val' valTy' <- warnAndRethrowWithPositionTC ss do
-          let dict = Map.singleton (Qualified byNullSourcePos ident)
-                       (Tuple (Tuple valTy nameKind) Undefined)
+          let dict = Map.singleton letKey (Tuple (Tuple valTy nameKind) Undefined)
           bindNames dict (infer val)
         warnAndRethrowWithPositionTC ss (unifyTypes valTy valTy')
         let newDecl = ValueDeclaration (ValueDeclarationData vd { valdeclExpression = [GuardedExpr [] val'] })
         bindNames
-          (Map.singleton (Qualified byNullSourcePos ident)
-            (Tuple (Tuple valTy' nameKind) Defined))
+          (Map.singleton letKey (Tuple (Tuple valTy' nameKind) Defined))
           (inferLetBinding (seen <> [newDecl]) rest ret j)
   Just { head: BindingGroupDeclaration ds, tail: rest } -> do
     moduleName <- unsafeCheckCurrentModule
