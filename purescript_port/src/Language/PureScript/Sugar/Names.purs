@@ -13,8 +13,10 @@ import Control.Monad.Writer.Class (class MonadWriter)
 import Data.Array as Array
 import Data.Array (mapMaybe)
 import Data.Foldable (foldM)
+import Data.Traversable (traverse)
 import Data.Map (Map)
 import Data.Map as Map
+import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
@@ -243,22 +245,122 @@ renameDecl
   -> ModuleName
   -> Declaration
   -> StateT UsedImports m Declaration
-renameDecl _imports _modSS mn decl = lift do
+renameDecl imports _modSS mn decl = lift do
   let
+    Imports imps = imports
     s0 = Tuple (declSourceSpan decl) (Map.empty :: Map Ident SourcePos)
 
-    -- Resolve BySourcePos (0,0) type constructor references to ByModuleName mn
+    -- Resolve a name via the import map to its defining module.
+    update
+      :: forall a. Ord a
+      => Map (Qualified a) (Array (ImportRecord a))
+      -> (a -> Name)
+      -> Qualified a
+      -> SourceSpan
+      -> m (Qualified a)
+    update impMap toName qname@(Qualified qb name) ss =
+      warnAndRethrowWithPosition ss $
+        case Tuple (Map.lookup qname impMap) qb of
+          Tuple (Just options) _ -> do
+            Tuple _ srcMn <- checkImportConflicts ss mn toName options
+            pure (Qualified (ByModuleName srcMn) name)
+          Tuple Nothing (ByModuleName mn'') ->
+            if Set.member mn'' imps.importedQualModules || Set.member mn'' imps.importedModules
+            then throwError (errorMessage (UnknownName (map toName qname)))
+            else throwError (errorMessage (UnknownName (Qualified byNullSourcePos (ModName mn''))))
+          _ ->
+            throwError (errorMessage (UnknownName (map toName qname)))
+
+    updateTypeName :: Qualified (ProperName TypeName) -> SourceSpan -> m (Qualified (ProperName TypeName))
+    updateTypeName = update imps.importedTypes TyName
+
+    updateTypeOpName :: Qualified (OpName TypeOpName) -> SourceSpan -> m (Qualified (OpName TypeOpName))
+    updateTypeOpName = update imps.importedTypeOps TyOpName
+
+    updateDataConstructorName :: Qualified (ProperName ConstructorName) -> SourceSpan -> m (Qualified (ProperName ConstructorName))
+    updateDataConstructorName = update imps.importedDataConstructors DctorName
+
+    updateClassName :: Qualified (ProperName ClassName) -> SourceSpan -> m (Qualified (ProperName ClassName))
+    updateClassName = update imps.importedTypeClasses TyClassName
+
+    updateValueName :: Qualified Ident -> SourceSpan -> m (Qualified Ident)
+    updateValueName = update imps.importedValues IdentName
+
+    updateValueOpName :: Qualified (OpName ValueOpName) -> SourceSpan -> m (Qualified (OpName ValueOpName))
+    updateValueOpName = update imps.importedValueOps ValOpName
+
+    -- Resolve type-level names. Called by everywhereOnTypesM (bottom-up),
+    -- so constraint args and sub-types are already resolved when we see them.
     resolveTypeRef :: SourceType -> m SourceType
-    resolveTypeRef (TypeConstructor ann (Qualified (BySourcePos (SourcePos sp)) name))
-      | sp.line == 0 && sp.column == 0 = pure (TypeConstructor ann (Qualified (ByModuleName mn) name))
+    resolveTypeRef (TypeConstructor ann name) =
+      TypeConstructor ann <$> updateTypeName name (fst ann)
+    resolveTypeRef (TypeOp ann name) =
+      TypeOp ann <$> updateTypeOpName name (fst ann)
+    resolveTypeRef (ConstrainedType ann (Constraint c) ty) = do
+      cls' <- updateClassName c.constraintClass (fst ann)
+      pure (ConstrainedType ann (Constraint c { constraintClass = cls' }) ty)
     resolveTypeRef t = pure t
 
     resolveType :: SourceType -> m SourceType
     resolveType = everywhereOnTypesM resolveTypeRef
 
+    -- Resolve all names in a constraint (for declarations, where everywhereOnTypesM won't run).
+    resolveConstraint :: SourceConstraint -> m SourceConstraint
+    resolveConstraint (Constraint c) = do
+      cls' <- updateClassName c.constraintClass (fst c.constraintAnn)
+      ks'  <- traverse resolveType c.constraintKindArgs
+      ts'  <- traverse resolveType c.constraintArgs
+      pure (Constraint c { constraintClass = cls', constraintKindArgs = ks', constraintArgs = ts' })
+
+    -- Resolve kind annotations on type parameters.
+    resolveTypeArgs :: Array (Tuple String (Maybe SourceType)) -> m (Array (Tuple String (Maybe SourceType)))
+    resolveTypeArgs = traverse (sndM (traverse resolveType))
+
     updateDecl' :: Tuple SourceSpan (Map Ident SourcePos) -> Declaration -> m (Tuple (Tuple SourceSpan (Map Ident SourcePos)) Declaration)
-    updateDecl' (Tuple _ bound) d =
-      pure (Tuple (Tuple (declSourceSpan d) bound) d)
+    updateDecl' (Tuple _ bound) d = do
+      let ss = declSourceSpan d
+      d' <- case d of
+        DataDeclaration sa dtype name args dctors -> do
+          args'   <- resolveTypeArgs args
+          dctors' <- traverse (traverseDataCtorFields (traverse (sndM resolveType))) dctors
+          pure (DataDeclaration sa dtype name args' dctors')
+        TypeSynonymDeclaration sa name args ty -> do
+          args' <- resolveTypeArgs args
+          ty'   <- resolveType ty
+          pure (TypeSynonymDeclaration sa name args' ty')
+        KindDeclaration sa kindFor name ty -> do
+          ty' <- resolveType ty
+          pure (KindDeclaration sa kindFor name ty')
+        TypeDeclaration (TypeDeclarationData td) -> do
+          ty' <- resolveType td.tydeclType
+          pure (TypeDeclaration (TypeDeclarationData td { tydeclType = ty' }))
+        ExternDeclaration sa ident ty -> do
+          ty' <- resolveType ty
+          pure (ExternDeclaration sa ident ty')
+        ExternDataDeclaration sa name ki -> do
+          ki' <- resolveType ki
+          pure (ExternDataDeclaration sa name ki')
+        TypeClassDeclaration sa name args implies deps ds -> do
+          args'    <- resolveTypeArgs args
+          implies' <- traverse resolveConstraint implies
+          pure (TypeClassDeclaration sa name args' implies' deps ds)
+        TypeInstanceDeclaration sa na ch idx name cs className args body -> do
+          cs'        <- traverse resolveConstraint cs
+          className' <- updateClassName className ss
+          args'      <- traverse resolveType args
+          pure (TypeInstanceDeclaration sa na ch idx name cs' className' args' body)
+        FixityDeclaration sa (Left (ValueFixity fix alias op)) -> do
+          alias' <- case alias of
+            Qualified qb (Left ident) ->
+              Qualified qb <<< Left <<< disqualify <$> updateValueName (Qualified qb ident) ss
+            Qualified qb (Right ctor) ->
+              Qualified qb <<< Right <<< disqualify <$> updateDataConstructorName (Qualified qb ctor) ss
+          pure (FixityDeclaration sa (Left (ValueFixity fix alias' op)))
+        FixityDeclaration sa (Right (TypeFixity fix alias op)) -> do
+          alias' <- updateTypeName alias ss
+          pure (FixityDeclaration sa (Right (TypeFixity fix alias' op)))
+        _ -> pure d
+      pure (Tuple (Tuple ss bound) d')
 
     updateValue' :: Tuple SourceSpan (Map Ident SourcePos) -> Expr -> m (Tuple (Tuple SourceSpan (Map Ident SourcePos)) Expr)
     updateValue' state@(Tuple pos bound) expr = case expr of
@@ -266,15 +368,23 @@ renameDecl _imports _modSS mn decl = lift do
         pure (Tuple (Tuple pos' bound) expr)
       Abs (VarBinder ss arg) _ ->
         pure (Tuple (Tuple pos (Map.insert arg (spanStart ss) bound)) expr)
-      Var ss (Qualified qb ident) ->
+      Var ss qname@(Qualified qb ident) ->
         case qb of
           BySourcePos (SourcePos sp) | sp.line == 0 && sp.column == 0 ->
             case Map.lookup ident bound of
-              Just sourcePos -> pure (Tuple state (Var ss (Qualified (BySourcePos sourcePos) ident)))
-              Nothing -> pure (Tuple state expr)
-          _ -> pure (Tuple state expr)
-      Constructor ss (Qualified (BySourcePos (SourcePos sp)) name) | sp.line == 0 && sp.column == 0 ->
-        pure (Tuple state (Constructor ss (Qualified (ByModuleName mn) name)))
+              Just sourcePos ->
+                pure (Tuple (Tuple ss bound) (Var ss (Qualified (BySourcePos sourcePos) ident)))
+              Nothing ->
+                (\q -> Tuple (Tuple ss bound) (Var ss q)) <$> updateValueName qname ss
+          ByModuleName _ ->
+            (\q -> Tuple (Tuple ss bound) (Var ss q)) <$> updateValueName qname ss
+          _ ->
+            -- non-null BySourcePos: already locally qualified
+            pure (Tuple (Tuple ss bound) expr)
+      Op ss op ->
+        (\o -> Tuple (Tuple ss bound) (Op ss o)) <$> updateValueOpName op ss
+      Constructor ss name ->
+        (\n -> Tuple (Tuple ss bound) (Constructor ss n)) <$> updateDataConstructorName name ss
       TypedValue check val ty -> do
         ty' <- resolveType ty
         pure (Tuple state (TypedValue check val ty'))
@@ -287,9 +397,13 @@ renameDecl _imports _modSS mn decl = lift do
       _ -> pure (Tuple state expr)
 
     updateBinder' :: Tuple SourceSpan (Map Ident SourcePos) -> Binder -> m (Tuple (Tuple SourceSpan (Map Ident SourcePos)) Binder)
-    updateBinder' state binder = case binder of
-      ConstructorBinder ss (Qualified (BySourcePos (SourcePos sp)) name) bs | sp.line == 0 && sp.column == 0 ->
-        pure (Tuple state (ConstructorBinder ss (Qualified (ByModuleName mn) name) bs))
+    updateBinder' state@(Tuple _ bound) binder = case binder of
+      PositionedBinder pos _ _ ->
+        pure (Tuple (Tuple pos bound) binder)
+      ConstructorBinder ss name bs ->
+        (\n -> Tuple (Tuple ss bound) (ConstructorBinder ss n bs)) <$> updateDataConstructorName name ss
+      OpBinder ss op ->
+        (\o -> Tuple (Tuple ss bound) (OpBinder ss o)) <$> updateValueOpName op ss
       TypedBinder ty b -> do
         ty' <- resolveType ty
         pure (Tuple state (TypedBinder ty' b))
